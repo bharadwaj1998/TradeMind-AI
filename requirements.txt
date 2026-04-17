@@ -1,0 +1,43 @@
+# TradeMind AI - Requirements
+# Install with: pip install -r requirements.txt
+
+# Core UI
+PyQt6==6.7.0
+PyQt6-Qt6==6.7.0
+PyQt6-sip==13.6.0
+pyqtgraph==0.13.7
+
+# Angel One SmartAPI
+smartapi-python==1.4.2
+websocket-client==1.8.0
+
+# Data & Analysis
+pandas==2.2.2
+numpy==1.26.4
+scipy==1.13.1
+ta==0.11.0               # Technical Analysis indicators
+
+# Database
+SQLAlchemy==2.0.30
+
+# AI / Llama
+llama-cpp-python==0.2.85
+
+# Security
+cryptography==42.0.8
+keyring==25.2.1
+
+# HTTP
+requests==2.32.3
+pyotp==2.9.0             # TOTP for Angel One 2FA
+
+# Charting (lightweight, optional TradingView embed)
+plotly==5.22.0
+
+# Packaging (dev only)
+pyinstaller==6.8.0
+
+# Utilities
+python-dotenv==1.0.1
+schedule==1.2.2
+loguru==0.7.2
