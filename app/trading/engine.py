@@ -308,9 +308,11 @@ class StrategyEngine(QObject):
         if not tokens:
             return
         auth = self.api.get_auth_tokens()
+        # SmartWebSocketV2 needs raw JWT, not "Bearer <token>"
+        jwt = auth["jwt_token"].removeprefix("Bearer ").strip()
         self._feed = AngelOneFeed(on_tick=self._on_ws_tick)
         started = self._feed.start(
-            jwt_token  = auth["jwt_token"],
+            jwt_token  = jwt,
             api_key    = auth["api_key"],
             client_id  = auth["client_id"],
             feed_token = auth["feed_token"],
