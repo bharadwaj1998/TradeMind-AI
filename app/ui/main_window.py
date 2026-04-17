@@ -23,12 +23,13 @@ def _load_screens():
     from app.ui.widgets.live_trading  import LiveTradingWidget
     from app.ui.widgets.history       import HistoryWidget
     from app.ui.widgets.strategies    import StrategiesWidget
+    from app.ui.widgets.scanner       import ScannerWidget
     from app.ui.widgets.risk_monitor  import RiskMonitorWidget
     from app.ui.widgets.ai_assistant  import AIAssistantWidget
     from app.ui.widgets.settings      import SettingsWidget
     return (DashboardWidget, LiveTradingWidget, HistoryWidget,
-            StrategiesWidget, RiskMonitorWidget, AIAssistantWidget,
-            SettingsWidget)
+            StrategiesWidget, ScannerWidget, RiskMonitorWidget,
+            AIAssistantWidget, SettingsWidget)
 
 
 NAV_ITEMS = [
@@ -39,11 +40,12 @@ NAV_ITEMS = [
     ("Trade History", "📋", 2),
     ("ANALYSIS", None, None),
     ("Strategies",    "♟",  3),
-    ("Risk Monitor",  "🛡",  4),
+    ("AI Scanner",    "🔍", 4),
+    ("Risk Monitor",  "🛡",  5),
     ("AI ASSISTANT", None, None),
-    ("AI Assistant",  "🤖", 5),
+    ("AI Assistant",  "🤖", 6),
     ("SYSTEM",  None, None),
-    ("Settings",      "⚙",  6),
+    ("Settings",      "⚙",  7),
 ]
 
 
@@ -202,20 +204,21 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._stack)
 
         (DashboardWidget, LiveTradingWidget, HistoryWidget,
-         StrategiesWidget, RiskMonitorWidget, AIAssistantWidget,
-         SettingsWidget) = _load_screens()
+         StrategiesWidget, ScannerWidget, RiskMonitorWidget,
+         AIAssistantWidget, SettingsWidget) = _load_screens()
 
         self._dashboard     = DashboardWidget(self.db)
         self._live_trading  = LiveTradingWidget(self.db)
         self._history       = HistoryWidget(self.db)
         self._strategies    = StrategiesWidget(self.db)
+        self._scanner       = ScannerWidget(self.db)
         self._risk_monitor  = RiskMonitorWidget(self.db)
         self._ai_assistant  = AIAssistantWidget(self.db)
         self._settings      = SettingsWidget(self.db)
 
         self._screens = [
             self._dashboard, self._live_trading, self._history,
-            self._strategies, self._risk_monitor,
+            self._strategies, self._scanner, self._risk_monitor,
             self._ai_assistant, self._settings,
         ]
         for screen in self._screens:
@@ -224,6 +227,11 @@ class MainWindow(QMainWindow):
         # ── Wire Settings signals ────────────────────────────────────────
         self._settings.credentials_saved.connect(self._on_credentials_saved)
         self._settings.model_path_changed.connect(self._on_model_path_changed)
+
+        # ── Wire Scanner ─────────────────────────────────────────────────
+        # auto-trade toggle in scanner controls the engine
+        self._scanner._auto_toggle.toggled.connect(self._on_auto_trade_toggled)
+        self._scanner._conf_spin.valueChanged.connect(self._on_conf_threshold_changed)
 
         # ── Start strategy engine (always on, demo mode until API connects) ──
         self._start_strategy_engine()
@@ -354,6 +362,7 @@ class MainWindow(QMainWindow):
         self._strategy_engine.signal_generated.connect(self._on_signal)
         self._strategy_engine.order_executed.connect(self._on_order_executed)
         self._strategy_engine.ltp_updated.connect(self._on_ltp_updated)
+        self._strategy_engine.scan_result.connect(self._scanner.on_scan_result)
         self._strategy_engine.engine_status.connect(
             lambda msg: self.statusBar().showMessage(f"  {msg}")
         )
@@ -386,6 +395,9 @@ class MainWindow(QMainWindow):
         if engine.is_loaded():
             self._engine = engine
             self._ai_assistant.set_engine(engine)
+            # Wire AI engine into strategy engine research gate
+            if self._strategy_engine:
+                self._strategy_engine.set_ai_engine(engine)
             self._settings.set_ai_status(True, engine.model_name())
             self.statusBar().showMessage(f"  AI ready — {engine.model_name()}")
             self.db.add_alert("AI model loaded", engine.model_name(), "INFO")
@@ -393,3 +405,23 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"  AI model failed to load: {error}")
             self.db.add_alert("AI model failed", error, "WARNING")
             self._settings.set_ai_status(False, error=error)
+
+    def _on_auto_trade_toggled(self, enabled: bool):
+        threshold = self._scanner.get_min_confidence()
+        if self._strategy_engine:
+            self._strategy_engine.set_auto_trade(enabled, threshold)
+        state = "ENABLED" if enabled else "DISABLED"
+        self.statusBar().showMessage(
+            f"  Auto-Trade {state} — min AI confidence {threshold}%"
+        )
+        self.db.add_alert(
+            f"Auto-Trade {state}",
+            f"Min confidence: {threshold}%",
+            "WARNING" if enabled else "INFO",
+        )
+
+    def _on_conf_threshold_changed(self, value: int):
+        if self._strategy_engine:
+            self._strategy_engine.set_auto_trade(
+                self._scanner.is_auto_trade(), value
+            )

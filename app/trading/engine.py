@@ -29,6 +29,7 @@ from app.trading.risk import RiskManager
 from app.config import EXCHANGE_NSE
 from app.api.websocket_feed import AngelOneFeed
 from app.api.angel_one import get_token
+from app.ai.researcher import AIResearcher
 
 # Strategy registry — maps DB name → class
 from app.trading.strategies.momentum      import MomentumBreakout
@@ -119,6 +120,7 @@ class StrategyEngine(QObject):
     ltp_updated      = pyqtSignal(dict)
     engine_status    = pyqtSignal(str)
     trading_halted   = pyqtSignal(str)
+    scan_result      = pyqtSignal(dict)     # AI scan result for Scanner widget
 
     def __init__(self, db: DatabaseManager, api=None):
         super().__init__()
@@ -133,6 +135,11 @@ class StrategyEngine(QObject):
         self._feed: Optional[AngelOneFeed] = None
         self._ltp_cache: Dict[str, float] = {}
         self._ltp_lock = threading.Lock()
+
+        # AI research gate
+        self._researcher: Optional[AIResearcher] = None
+        self._auto_trade = False          # controlled by Scanner widget toggle
+        self._ai_threshold = 70           # min AI confidence to execute
 
         # Timers (created in start() so they belong to the right thread)
         self._strategy_timer: Optional[QTimer] = None
@@ -186,6 +193,18 @@ class StrategyEngine(QObject):
         self.api = api
         self._start_websocket_feed()
 
+    def set_ai_engine(self, engine):
+        """Wire the active AI engine into the research gate."""
+        self._researcher = AIResearcher(engine, self._ai_threshold)
+        self.engine_status.emit("AI research gate active")
+
+    def set_auto_trade(self, enabled: bool, threshold: int = 70):
+        """Toggle auto-trade and update confidence threshold."""
+        self._auto_trade  = enabled
+        self._ai_threshold = threshold
+        if self._researcher:
+            self._researcher.set_threshold(threshold)
+
     def set_watchlist(self, symbols: List[str]):
         self._watchlist = symbols
 
@@ -218,32 +237,64 @@ class StrategyEngine(QObject):
 
                     signal = strat_obj.generate_signal(df, symbol, EXCHANGE_NSE)
 
-                    # Always emit to UI (even HOLDs, so the signal log stays active)
+                    # Always emit to Strategies log
                     self.signal_generated.emit(signal)
 
                     if signal.is_actionable:
-                        self._process_signal(signal)
+                        self._process_signal(signal, df)
 
                 except Exception as e:
                     self.engine_status.emit(f"Strategy error [{strat_obj.name}]: {e}")
 
-    def _process_signal(self, signal: TradeSignal):
-        """Run risk checks then place order (paper or live)."""
+    def _process_signal(self, signal: TradeSignal, df=None):
+        """
+        Pipeline:
+          1. Risk manager pre-check (daily cap, position limit, R:R)
+          2. AI research gate (if researcher available)
+          3. Place order (paper or live)
+          4. Emit scan_result to Scanner widget
+        """
+        # ── Step 1: Risk pre-check ────────────────────────────────────────
         approved, reason, qty = self._risk.evaluate(signal)
         if not approved:
-            self.db.add_alert(
-                title=f"Signal rejected: {signal.symbol}",
-                message=f"{signal.strategy}: {reason}",
-                level="INFO",
-            )
+            self._emit_scan(signal, research=None, status="Risk rejected", executed=False,
+                            reason=reason)
             return
 
-        # Determine entry price
         entry_price = signal.price if signal.price > 0 else self._get_ltp(signal.symbol)
         if not entry_price:
             return
 
-        # Paper trade or live
+        # ── Step 2: AI research gate ──────────────────────────────────────
+        research = None
+        if self._researcher and self._researcher.is_available():
+            self.engine_status.emit(f"AI researching {signal.symbol}…")
+            research = self._researcher.research(signal, df)
+
+            self._emit_scan(signal, research,
+                            status="AI approved" if research["approved"] else "AI rejected",
+                            executed=False)
+
+            # If auto-trade is OFF, just show in scanner — don't execute
+            if not self._auto_trade:
+                return
+
+            # If AI says no, abort
+            if not research["approved"]:
+                self.db.add_alert(
+                    title=f"AI rejected: {signal.symbol}",
+                    message=f"{research['confidence']}% — {research['reason']}",
+                    level="INFO",
+                )
+                return
+        else:
+            # No AI — show in scanner, respect auto_trade toggle
+            self._emit_scan(signal, research, status="No AI gate", executed=False,
+                            reason=signal.reason)
+            if not self._auto_trade:
+                return
+
+        # ── Step 3: Place order ───────────────────────────────────────────
         order_id = None
         if not self._paper_mode and self.api and self.api.is_connected():
             try:
@@ -269,26 +320,28 @@ class StrategyEngine(QObject):
                 self.db.add_alert(title="Order error", message=str(e), level="DANGER")
                 return
 
-        # Log trade to DB
+        # ── Step 4: Log + emit ────────────────────────────────────────────
+        ai_reason = research["reason"] if research else signal.reason
         trade = self.db.add_trade(
-            symbol     = signal.symbol,
-            exchange   = signal.exchange,
-            direction  = signal.signal.value,
-            quantity   = qty,
+            symbol      = signal.symbol,
+            exchange    = signal.exchange,
+            direction   = signal.signal.value,
+            quantity    = qty,
             entry_price = entry_price,
-            stop_loss  = signal.stop_loss,
-            target     = signal.target,
-            strategy   = signal.strategy,
-            ai_reason  = signal.reason,
-            order_id   = order_id,
+            stop_loss   = signal.stop_loss,
+            target      = signal.target,
+            strategy    = signal.strategy,
+            ai_reason   = ai_reason,
+            order_id    = order_id,
         )
 
         mode_tag = "PAPER" if (self._paper_mode or not order_id) else "LIVE"
         self.db.add_alert(
             title=f"[{mode_tag}] {signal.signal.value} {qty}× {signal.symbol}",
-            message=signal.reason,
+            message=ai_reason,
             level="INFO",
         )
+        self._emit_scan(signal, research, status=f"✓ {mode_tag} executed", executed=True)
         self.order_executed.emit({
             "trade_id": trade.id,
             "symbol":   signal.symbol,
@@ -297,6 +350,25 @@ class StrategyEngine(QObject):
             "price":    entry_price,
             "strategy": signal.strategy,
             "paper":    self._paper_mode or not order_id,
+        })
+
+    def _emit_scan(self, signal: TradeSignal, research: Optional[dict],
+                   status: str, executed: bool, reason: str = ""):
+        """Build and emit a scan_result dict for the Scanner widget."""
+        conf     = research["confidence"] if research else int(signal.confidence * 100)
+        risk     = research["risk"]       if research else "MEDIUM"
+        ai_reason = research["reason"]    if research else (reason or signal.reason)
+        self.scan_result.emit({
+            "symbol":     signal.symbol,
+            "signal":     signal.signal.value,
+            "strategy":   signal.strategy,
+            "price":      signal.price,
+            "confidence": conf,
+            "risk":       risk,
+            "status":     status,
+            "reason":     ai_reason,
+            "approved":   research["approved"] if research else False,
+            "executed":   executed,
         })
 
     # ── WebSocket feed ────────────────────────────────────────────────────
