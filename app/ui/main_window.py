@@ -126,8 +126,9 @@ class MainWindow(QMainWindow):
         self._start_clock()
         self._navigate(0)
 
-        # Auto-login if credentials are saved
+        # Auto-login and auto-load AI model on startup
         QTimer.singleShot(500, self._try_auto_login)
+        QTimer.singleShot(800, self._try_auto_load_ai)
 
     # ── UI construction ────────────────────────────────────────────────────
     def _build_ui(self):
@@ -308,24 +309,35 @@ class MainWindow(QMainWindow):
             self.set_connection_status(True, msg)
             self.statusBar().showMessage(f"  Angel One connected — {msg}")
             self.db.add_alert("Angel One connected", msg, "INFO")
-            # Pass API to widgets and engine
             self._live_trading.set_api(self._api)
             if self._strategy_engine:
                 self._strategy_engine.set_api(self._api)
+            self._settings.set_broker_status(True, msg)
         else:
             self.set_connection_status(False, "Login failed")
             self.statusBar().showMessage(f"  Angel One login failed: {msg}")
             self.db.add_alert("Login failed", msg, "WARNING")
+            self._settings.set_broker_status(False, msg)
 
     # ── AI Engine ─────────────────────────────────────────────────────────
+    def _try_auto_load_ai(self):
+        """On startup, auto-load AI model if a saved path exists."""
+        from pathlib import Path
+        model_path = self.db.get_setting("ai_model_path", "")
+        if model_path and Path(model_path).exists():
+            n_threads = int(self.db.get_setting("ai_threads",  "4"))
+            n_ctx     = int(self.db.get_setting("ai_ctx_size", "4096"))
+            self._load_ai_model(model_path, n_threads, n_ctx)
+
     def _on_model_path_changed(self, model_path: str):
         """Called when user saves a new model path in Settings."""
-        n_threads = int(self.db.get_setting("ai_threads", "4"))
+        n_threads = int(self.db.get_setting("ai_threads",  "4"))
         n_ctx     = int(self.db.get_setting("ai_ctx_size", "4096"))
         self._load_ai_model(model_path, n_threads, n_ctx)
 
     def _load_ai_model(self, model_path: str, n_threads: int = 4, n_ctx: int = 4096):
         self.statusBar().showMessage("  Loading AI model — this may take 30-60 seconds…")
+        self._settings.set_ai_status(False, error="Loading…")
         self._ai_load_worker = _AILoadWorker(model_path, n_threads, n_ctx)
         self._ai_load_worker.done.connect(self._on_ai_loaded)
         self._ai_load_worker.start()
@@ -372,10 +384,10 @@ class MainWindow(QMainWindow):
         if engine.is_loaded():
             self._engine = engine
             self._ai_assistant.set_engine(engine)
-            self.statusBar().showMessage(
-                f"  AI model loaded: {engine.model_name()}"
-            )
+            self._settings.set_ai_status(True, engine.model_name())
+            self.statusBar().showMessage(f"  AI ready — {engine.model_name()}")
             self.db.add_alert("AI model loaded", engine.model_name(), "INFO")
         else:
             self.statusBar().showMessage(f"  AI model failed to load: {error}")
             self.db.add_alert("AI model failed", error, "WARNING")
+            self._settings.set_ai_status(False, error=error)

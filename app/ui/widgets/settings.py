@@ -55,6 +55,14 @@ class SettingsWidget(QWidget):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(16)
 
+        # Connection status badge
+        self._conn_badge = QLabel("● Not Connected")
+        self._conn_badge.setStyleSheet(
+            f"background: {COLOR_DANGER}18; color: {COLOR_DANGER}; "
+            f"border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 700;"
+        )
+        layout.addWidget(self._conn_badge)
+
         info = QLabel(
             "Your credentials are stored encrypted on this device only. "
             "Never shared or sent online."
@@ -107,6 +115,14 @@ class SettingsWidget(QWidget):
         layout = QVBoxLayout(w)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(16)
+
+        # AI model status badge
+        self._ai_badge = QLabel("● Model Not Loaded")
+        self._ai_badge.setStyleSheet(
+            f"background: {COLOR_WARNING}18; color: {COLOR_WARNING}; "
+            f"border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 700;"
+        )
+        layout.addWidget(self._ai_badge)
 
         info = QLabel(
             "TradeMind AI uses your local Mistral model via llama.cpp — "
@@ -330,14 +346,30 @@ class SettingsWidget(QWidget):
         QMessageBox.information(self, "Saved", "Trading rules saved successfully.")
 
     def _load_settings(self):
+        # ── Restore credentials from vault ────────────────────────────────
+        try:
+            from app.security.vault import Vault
+            creds = Vault().load_all_broker_creds()
+            if creds.get("api_key"):
+                self._api_key.setText(creds["api_key"])
+            if creds.get("client_id"):
+                self._client_id.setText(creds["client_id"])
+            if creds.get("password"):
+                self._client_pwd.setText(creds["password"])
+            if creds.get("totp_secret"):
+                self._totp_secret.setText(creds["totp_secret"])
+        except Exception:
+            pass
+
+        # ── Restore AI + trading settings from DB ─────────────────────────
         self._model_path.setText(self.db.get_setting("ai_model_path", "") or "")
-        threads  = self.db.get_setting("ai_threads",    "4")
-        ctx      = self.db.get_setting("ai_ctx_size",   "4096")
-        capital  = self.db.get_setting("capital",       str(DEFAULT_CAPITAL))
-        risk_pct = self.db.get_setting("max_risk_pct",  str(MAX_RISK_PER_TRADE_PCT))
+        threads  = self.db.get_setting("ai_threads",       "4")
+        ctx      = self.db.get_setting("ai_ctx_size",      "4096")
+        capital  = self.db.get_setting("capital",          str(DEFAULT_CAPITAL))
+        risk_pct = self.db.get_setting("max_risk_pct",     str(MAX_RISK_PER_TRADE_PCT))
         dl_limit = self.db.get_setting("daily_loss_limit", str(MAX_DAILY_LOSS_PCT))
-        max_pos  = self.db.get_setting("max_positions", "3")
-        paper    = self.db.get_setting("paper_mode",    "True")
+        max_pos  = self.db.get_setting("max_positions",    "3")
+        paper    = self.db.get_setting("paper_mode",       "True")
 
         try:
             self._ai_threads.setValue(int(threads))
@@ -349,6 +381,44 @@ class SettingsWidget(QWidget):
             self._paper_mode.setChecked(paper == "True")
         except Exception:
             pass
+
+    # ── Public status updaters (called by MainWindow) ─────────────────────
+    def set_broker_status(self, connected: bool, label: str = ""):
+        if connected:
+            self._conn_badge.setText(f"● Connected — {label}")
+            self._conn_badge.setStyleSheet(
+                f"background: {COLOR_SUCCESS}18; color: {COLOR_SUCCESS}; "
+                f"border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 700;"
+            )
+            self._broker_status.setText("✓ Connected")
+            self._broker_status.setStyleSheet(f"color: {COLOR_SUCCESS}; font-weight:600;")
+        else:
+            self._conn_badge.setText(f"● Not Connected{' — ' + label if label else ''}")
+            self._conn_badge.setStyleSheet(
+                f"background: {COLOR_DANGER}18; color: {COLOR_DANGER}; "
+                f"border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 700;"
+            )
+            self._broker_status.setText(label or "")
+            self._broker_status.setStyleSheet(f"color: {COLOR_DANGER}; font-weight:600;")
+
+    def set_ai_status(self, loaded: bool, model_name: str = "", error: str = ""):
+        if loaded:
+            self._ai_badge.setText(f"● AI Ready — {model_name}")
+            self._ai_badge.setStyleSheet(
+                f"background: {COLOR_SUCCESS}18; color: {COLOR_SUCCESS}; "
+                f"border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 700;"
+            )
+            self._ai_status.setText(f"✓ Loaded: {model_name}")
+            self._ai_status.setStyleSheet(f"color: {COLOR_SUCCESS}; font-weight:600; font-size:11px;")
+        else:
+            self._ai_badge.setText(f"● Model Not Loaded{' — ' + error if error else ''}")
+            self._ai_badge.setStyleSheet(
+                f"background: {COLOR_WARNING}18; color: {COLOR_WARNING}; "
+                f"border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 700;"
+            )
+            if error:
+                self._ai_status.setText(error)
+                self._ai_status.setStyleSheet(f"color: {COLOR_DANGER}; font-weight:600; font-size:11px;")
 
     def refresh(self):
         self._load_settings()
