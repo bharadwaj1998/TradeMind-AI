@@ -2,10 +2,11 @@
 TradeMind AI — AI Engine
 Supports multiple backends: Google Gemini (recommended), Groq, or local Llama.
 
-Recommended: Google Gemini 2.0 Flash
+Recommended: Google Gemini 1.5 Flash
   - Free tier: 15 req/min, 1M tokens/day
   - Get key: https://aistudio.google.com/app/apikey
   - Fast, no crashes, no local GPU needed
+  - Note: gemini-2.0-flash has quota=0 on India free tier, use gemini-1.5-flash
 """
 from typing import Optional
 
@@ -26,7 +27,7 @@ class BaseEngine:
 
 # ── Google Gemini ─────────────────────────────────────────────────────────────
 class GeminiEngine(BaseEngine):
-    def __init__(self, api_key: str, model: str = "gemini-2.0-flash"):
+    def __init__(self, api_key: str, model: str = "gemini-1.5-flash-latest"):
         self._model_id = model
         self._error    = ""
         self._model    = None
@@ -61,7 +62,21 @@ class GeminiEngine(BaseEngine):
             resp = self._model.generate_content(full_prompt)
             return resp.text.strip()
         except Exception as e:
-            return f"Gemini error: {e}"
+            err = str(e)
+            if "429" in err or "quota" in err.lower():
+                return (
+                    "Gemini quota exceeded.\n\n"
+                    "Try: Settings → AI Assistant → change Model to 'gemini-1.5-flash-latest'\n"
+                    "Or switch provider to Groq (free at console.groq.com)"
+                )
+            if "404" in err or "not found" in err.lower():
+                return (
+                    "Gemini model not found.\n\n"
+                    "Fix: In Settings → AI Assistant → set Model to 'gemini-1.5-flash-latest'\n"
+                    "Or run in terminal: pip install --upgrade google-generativeai\n"
+                    "Or switch provider to Groq (free, no India restrictions)"
+                )
+            return f"Gemini error: {err[:200]}"
 
 
 # ── Groq (runs Llama/Gemma at high speed, free tier) ────────────────────────
@@ -156,7 +171,7 @@ def create_engine(provider: str, api_key: str = "", model_path: str = "",
     provider: "gemini" | "groq" | "llama"
     """
     if provider == "gemini":
-        return GeminiEngine(api_key, model=model_id or "gemini-2.0-flash")
+        return GeminiEngine(api_key, model=model_id or "gemini-1.5-flash-latest")
     elif provider == "groq":
         return GroqEngine(api_key, model=model_id or "llama-3.3-70b-versatile")
     elif provider == "llama":

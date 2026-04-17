@@ -177,6 +177,15 @@ class AngelOneAPI:
     def get_profile(self) -> Dict:
         return self._profile
 
+    def get_auth_tokens(self) -> Dict:
+        """Return tokens needed to start the WebSocket feed."""
+        return {
+            "jwt_token":  self._jwt_token,
+            "feed_token": self._feed_token,
+            "api_key":    self._api_key,
+            "client_id":  self._client_id,
+        }
+
     # ── Market Data ───────────────────────────────────────────────────────
     def get_ltp(self, exchange: str, symbol: str, token: str = "") -> Optional[float]:
         """

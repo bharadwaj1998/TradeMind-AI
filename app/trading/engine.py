@@ -16,6 +16,7 @@ Also handles:
   - Market open / close detection
 """
 import time
+import threading
 from datetime import datetime
 from typing import List, Dict, Optional
 
@@ -26,6 +27,8 @@ from app.database.manager import DatabaseManager, Strategy
 from app.trading.signal import TradeSignal, SignalType
 from app.trading.risk import RiskManager
 from app.config import EXCHANGE_NSE
+from app.api.websocket_feed import AngelOneFeed
+from app.api.angel_one import get_token
 
 # Strategy registry — maps DB name → class
 from app.trading.strategies.momentum      import MomentumBreakout
@@ -126,10 +129,16 @@ class StrategyEngine(QObject):
         self._paper_mode = True
         self._watchlist: List[str] = list(DEFAULT_SYMBOLS)
 
+        # WebSocket feed + LTP cache
+        self._feed: Optional[AngelOneFeed] = None
+        self._ltp_cache: Dict[str, float] = {}
+        self._ltp_lock = threading.Lock()
+
         # Timers (created in start() so they belong to the right thread)
         self._strategy_timer: Optional[QTimer] = None
         self._ltp_timer:      Optional[QTimer] = None
         self._sl_timer:       Optional[QTimer] = None
+        self._tick_emit_timer: Optional[QTimer] = None
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
     def start(self):
@@ -142,7 +151,7 @@ class StrategyEngine(QObject):
         self._strategy_timer.timeout.connect(self._run_strategies)
         self._strategy_timer.start(60_000)
 
-        # LTP refresh every 5 seconds
+        # REST LTP fallback every 5 s (skipped while WebSocket is active)
         self._ltp_timer = QTimer()
         self._ltp_timer.timeout.connect(self._refresh_ltps)
         self._ltp_timer.start(5_000)
@@ -152,6 +161,11 @@ class StrategyEngine(QObject):
         self._sl_timer.timeout.connect(self._monitor_stop_losses)
         self._sl_timer.start(30_000)
 
+        # Emit cached WebSocket ticks to UI at 1 Hz (smooth but not hammering)
+        self._tick_emit_timer = QTimer()
+        self._tick_emit_timer.timeout.connect(self._emit_ltp_cache)
+        self._tick_emit_timer.start(1_000)
+
         self.engine_status.emit("Strategy engine started")
 
         # Run once immediately
@@ -160,13 +174,17 @@ class StrategyEngine(QObject):
 
     def stop(self):
         self._running = False
-        for t in (self._strategy_timer, self._ltp_timer, self._sl_timer):
+        if self._feed:
+            self._feed.stop()
+        for t in (self._strategy_timer, self._ltp_timer,
+                  self._sl_timer, self._tick_emit_timer):
             if t:
                 t.stop()
         self.engine_status.emit("Strategy engine stopped")
 
     def set_api(self, api):
         self.api = api
+        self._start_websocket_feed()
 
     def set_watchlist(self, symbols: List[str]):
         self._watchlist = symbols
@@ -281,22 +299,79 @@ class StrategyEngine(QObject):
             "paper":    self._paper_mode or not order_id,
         })
 
-    # ── LTP refresh ───────────────────────────────────────────────────────
+    # ── WebSocket feed ────────────────────────────────────────────────────
+    def _start_websocket_feed(self):
+        """Start the WebSocket feed once the API is connected."""
+        if not (self.api and self.api.is_connected()):
+            return
+        tokens = self._build_token_map()
+        if not tokens:
+            return
+        auth = self.api.get_auth_tokens()
+        self._feed = AngelOneFeed(on_tick=self._on_ws_tick)
+        started = self._feed.start(
+            jwt_token  = auth["jwt_token"],
+            api_key    = auth["api_key"],
+            client_id  = auth["client_id"],
+            feed_token = auth["feed_token"],
+            token_map  = tokens,
+        )
+        if started:
+            self.engine_status.emit(
+                f"WebSocket feed live — {len(tokens)} symbols streaming"
+            )
+        else:
+            self.engine_status.emit("WebSocket unavailable — using REST polling")
+
+    def _build_token_map(self) -> Dict[str, str]:
+        """Build {angel_token: symbol} for the current watchlist."""
+        result = {}
+        for sym in self._watchlist:
+            tok = get_token(sym)
+            if tok:
+                result[tok] = sym
+        return result
+
+    def _on_ws_tick(self, symbol: str, ltp: float):
+        """Called from the WebSocket thread on each price tick."""
+        with self._ltp_lock:
+            self._ltp_cache[symbol] = ltp
+
+    def _emit_ltp_cache(self):
+        """Emit the latest cached prices to the UI at 1 Hz."""
+        if not self._running:
+            return
+        with self._ltp_lock:
+            snapshot = dict(self._ltp_cache)
+        if snapshot:
+            self.ltp_updated.emit(snapshot)
+
+    # ── LTP refresh (REST fallback when WebSocket is not active) ──────────
     def _refresh_ltps(self):
         if not self._running:
+            return
+        # If WebSocket is streaming, skip REST polling entirely
+        if self._feed and self._feed.is_running():
             return
         result: Dict[str, float] = {}
         if self.api and self.api.is_connected():
             result = self.api.refresh_watchlist(self._watchlist)
         else:
-            # Demo mode: synthesise LTPs from demo OHLCV
+            # Demo mode: synthesise LTPs
             for sym in self._watchlist:
                 df = _generate_demo_ohlcv(sym, 5)
                 result[sym] = float(df["close"].iloc[-1])
         if result:
+            with self._ltp_lock:
+                self._ltp_cache.update(result)
             self.ltp_updated.emit(result)
 
     def _get_ltp(self, symbol: str) -> Optional[float]:
+        """Get latest price: WebSocket cache → REST → demo."""
+        with self._ltp_lock:
+            cached = self._ltp_cache.get(symbol)
+        if cached:
+            return cached
         if self.api and self.api.is_connected():
             return self.api.get_ltp(EXCHANGE_NSE, symbol)
         df = _generate_demo_ohlcv(symbol, 2)
