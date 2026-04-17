@@ -29,8 +29,10 @@ class GeminiEngine(BaseEngine):
     def __init__(self, api_key: str, model: str = "gemini-2.0-flash"):
         self._model_id = model
         self._error    = ""
-        self._client   = None
         self._model    = None
+        if not api_key or len(api_key) < 10:
+            self._error = "Invalid API key"
+            return
         try:
             import google.generativeai as genai
             genai.configure(api_key=api_key)
@@ -38,9 +40,6 @@ class GeminiEngine(BaseEngine):
                 model_name=model,
                 system_instruction=_SYSTEM_PROMPT,
             )
-            self._client = genai
-            # Quick test
-            self._model.generate_content("hi")
         except Exception as e:
             self._error = str(e)
             self._model = None
@@ -71,14 +70,12 @@ class GroqEngine(BaseEngine):
         self._model_id = model
         self._error    = ""
         self._client   = None
+        if not api_key or len(api_key) < 10:
+            self._error = "Invalid API key"
+            return
         try:
             from groq import Groq
             self._client = Groq(api_key=api_key)
-            # Quick test
-            self._client.chat.completions.create(
-                messages=[{"role": "user", "content": "hi"}],
-                model=self._model_id, max_tokens=5,
-            )
         except Exception as e:
             self._error  = str(e)
             self._client = None
