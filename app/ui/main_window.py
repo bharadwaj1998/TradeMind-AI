@@ -70,15 +70,22 @@ class _LoginWorker(QThread):
 class _AILoadWorker(QThread):
     done = pyqtSignal(object, str)   # engine, error
 
-    def __init__(self, model_path: str, n_threads: int, n_ctx: int):
+    def __init__(self, db):
         super().__init__()
-        self.model_path = model_path
-        self.n_threads  = n_threads
-        self.n_ctx      = n_ctx
+        self.db = db
 
     def run(self):
-        from app.ai.engine import LlamaEngine
-        engine = LlamaEngine(self.model_path, self.n_threads, self.n_ctx)
+        from app.ai.engine import create_engine
+        from app.security.vault import Vault
+        vault    = Vault()
+        provider = self.db.get_setting("ai_provider", "gemini")
+        api_key  = vault.load(f"{provider}_api_key", "")
+        model_id = self.db.get_setting("ai_model_id", "")
+        model_path = self.db.get_setting("ai_model_path", "")
+        n_threads  = int(self.db.get_setting("ai_threads", "4"))
+        n_ctx      = int(self.db.get_setting("ai_ctx_size", "4096"))
+        engine = create_engine(provider, api_key=api_key, model_path=model_path,
+                               model_id=model_id)
         self.done.emit(engine, engine.get_error())
 
 
@@ -321,24 +328,19 @@ class MainWindow(QMainWindow):
 
     # ── AI Engine ─────────────────────────────────────────────────────────
     def _try_auto_load_ai(self):
-        """On startup, auto-load AI model if a saved path exists."""
-        from pathlib import Path
-        model_path = self.db.get_setting("ai_model_path", "")
-        if model_path and Path(model_path).exists():
-            n_threads = int(self.db.get_setting("ai_threads",  "4"))
-            n_ctx     = int(self.db.get_setting("ai_ctx_size", "4096"))
-            self._load_ai_model(model_path, n_threads, n_ctx)
+        """On startup, auto-load AI if a provider is configured."""
+        provider = self.db.get_setting("ai_provider", "")
+        if provider:
+            self._load_ai_model()
 
-    def _on_model_path_changed(self, model_path: str):
-        """Called when user saves a new model path in Settings."""
-        n_threads = int(self.db.get_setting("ai_threads",  "4"))
-        n_ctx     = int(self.db.get_setting("ai_ctx_size", "4096"))
-        self._load_ai_model(model_path, n_threads, n_ctx)
+    def _on_model_path_changed(self, _=None):
+        """Called when user clicks Connect AI in Settings."""
+        self._load_ai_model()
 
-    def _load_ai_model(self, model_path: str, n_threads: int = 4, n_ctx: int = 4096):
-        self.statusBar().showMessage("  Loading AI model — this may take 30-60 seconds…")
-        self._settings.set_ai_status(False, error="Loading…")
-        self._ai_load_worker = _AILoadWorker(model_path, n_threads, n_ctx)
+    def _load_ai_model(self):
+        self.statusBar().showMessage("  Connecting to AI…")
+        self._settings.set_ai_status(False, error="Connecting…")
+        self._ai_load_worker = _AILoadWorker(self.db)
         self._ai_load_worker.done.connect(self._on_ai_loaded)
         self._ai_load_worker.start()
 

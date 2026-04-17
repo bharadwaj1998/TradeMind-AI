@@ -124,22 +124,35 @@ class SettingsWidget(QWidget):
         )
         layout.addWidget(self._ai_badge)
 
-        info = QLabel(
-            "TradeMind AI uses your local Mistral model via llama.cpp — "
-            "no data leaves your computer."
-        )
-        info.setWordWrap(True)
-        info.setStyleSheet(
-            f"background: #10b98111; color: {COLOR_TEXT_MUTED}; "
-            f"border-radius: 8px; padding: 10px 14px; font-size: 12px;"
-        )
-        layout.addWidget(info)
-
         form = QFormLayout()
         form.setSpacing(12)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
-        # Model path with browse button
+        # Provider selector
+        self._ai_provider = QComboBox()
+        self._ai_provider.addItems(["Google Gemini (Recommended — Free)", "Groq (Free)", "Local Llama (Offline)"])
+        self._ai_provider.currentIndexChanged.connect(self._on_provider_changed)
+        form.addRow("AI Provider:", self._ai_provider)
+
+        # API key (Gemini / Groq)
+        self._ai_api_key = QLineEdit()
+        self._ai_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._ai_api_key.setPlaceholderText("Paste your API key here")
+        form.addRow("API Key:", self._ai_api_key)
+
+        # API key help label
+        self._ai_key_help = QLabel(
+            "Get free key: aistudio.google.com/app/apikey"
+        )
+        self._ai_key_help.setStyleSheet(f"color: {COLOR_ACCENT}; font-size: 11px;")
+        form.addRow("", self._ai_key_help)
+
+        # Model ID (optional override)
+        self._ai_model_id = QLineEdit()
+        self._ai_model_id.setPlaceholderText("gemini-2.0-flash  (leave blank for default)")
+        form.addRow("Model (optional):", self._ai_model_id)
+
+        # Local model path (only shown for Llama)
         path_row = QHBoxLayout()
         self._model_path = QLineEdit()
         self._model_path.setPlaceholderText(
@@ -150,23 +163,27 @@ class SettingsWidget(QWidget):
         browse.setObjectName("btn-ghost")
         browse.clicked.connect(self._browse_model)
         path_row.addWidget(browse)
-        form.addRow("Model File (.gguf):", path_row)
+        self._model_path_row_label = QLabel("Model File (.gguf):")
+        form.addRow(self._model_path_row_label, path_row)
 
+        # Llama options (threads/ctx) — hidden unless Llama selected
         self._ai_threads = QSpinBox()
         self._ai_threads.setRange(1, 32)
         self._ai_threads.setValue(4)
-        form.addRow("CPU Threads:", self._ai_threads)
+        self._threads_label = QLabel("CPU Threads:")
+        form.addRow(self._threads_label, self._ai_threads)
 
         self._ai_ctx = QSpinBox()
         self._ai_ctx.setRange(512, 16384)
         self._ai_ctx.setSingleStep(512)
         self._ai_ctx.setValue(4096)
-        form.addRow("Context Size:", self._ai_ctx)
+        self._ctx_label = QLabel("Context Size:")
+        form.addRow(self._ctx_label, self._ai_ctx)
 
         layout.addLayout(form)
 
         btn_row = QHBoxLayout()
-        load_btn = QPushButton("Load Model")
+        load_btn = QPushButton("Connect AI")
         load_btn.setObjectName("btn-primary")
         load_btn.setMinimumHeight(40)
         load_btn.clicked.connect(self._save_ai_settings)
@@ -176,6 +193,9 @@ class SettingsWidget(QWidget):
         btn_row.addWidget(self._ai_status)
         btn_row.addStretch()
         layout.addLayout(btn_row)
+
+        # Set initial visibility
+        self._on_provider_changed(0)
 
         # Download link
         dl_lbl = QLabel(
@@ -320,22 +340,55 @@ class SettingsWidget(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not save credentials:\n{e}")
 
+    def _on_provider_changed(self, index: int):
+        """Show/hide fields based on selected provider."""
+        is_llama = (index == 2)
+        is_cloud = (index in (0, 1))
+
+        self._ai_api_key.setVisible(is_cloud)
+        self._ai_key_help.setVisible(is_cloud)
+        self._ai_model_id.setVisible(is_cloud)
+        self._model_path.setVisible(is_llama)
+        self._model_path_row_label.setVisible(is_llama)
+        self._ai_threads.setVisible(is_llama)
+        self._threads_label.setVisible(is_llama)
+        self._ai_ctx.setVisible(is_llama)
+        self._ctx_label.setVisible(is_llama)
+
+        # Update help text
+        if index == 0:
+            self._ai_key_help.setText("Get free key: aistudio.google.com/app/apikey")
+            self._ai_model_id.setPlaceholderText("gemini-2.0-flash  (leave blank for default)")
+        elif index == 1:
+            self._ai_key_help.setText("Get free key: console.groq.com/keys")
+            self._ai_model_id.setPlaceholderText("llama-3.3-70b-versatile  (leave blank for default)")
+
     def _save_ai_settings(self):
-        model_path = self._model_path.text().strip()
-        if not model_path:
-            QMessageBox.warning(self, "Missing Path", "Please select a .gguf model file.")
-            return
-        if not Path(model_path).exists():
-            QMessageBox.warning(self, "File Not Found", f"Cannot find model:\n{model_path}")
-            return
+        provider_map = {0: "gemini", 1: "groq", 2: "llama"}
+        provider = provider_map[self._ai_provider.currentIndex()]
 
-        self.db.set_setting("ai_model_path", model_path)
-        self.db.set_setting("ai_threads",    self._ai_threads.value())
-        self.db.set_setting("ai_ctx_size",   self._ai_ctx.value())
+        if provider == "llama":
+            model_path = self._model_path.text().strip()
+            if not model_path or not Path(model_path).exists():
+                QMessageBox.warning(self, "File Not Found", "Please select a valid .gguf model file.")
+                return
+            self.db.set_setting("ai_provider",   "llama")
+            self.db.set_setting("ai_model_path", model_path)
+            self.db.set_setting("ai_threads",    self._ai_threads.value())
+            self.db.set_setting("ai_ctx_size",   self._ai_ctx.value())
+        else:
+            api_key = self._ai_api_key.text().strip()
+            if not api_key:
+                QMessageBox.warning(self, "Missing API Key", "Please enter an API key.")
+                return
+            from app.security.vault import Vault
+            Vault().save(f"{provider}_api_key", api_key)
+            self.db.set_setting("ai_provider",  provider)
+            self.db.set_setting("ai_model_id",  self._ai_model_id.text().strip())
 
-        self._ai_status.setText("✓ Saved — model will load on next app start")
-        self._ai_status.setStyleSheet(f"color: {COLOR_SUCCESS}; font-weight:600; font-size:11px;")
-        self.model_path_changed.emit(model_path)
+        self._ai_status.setText("Connecting…")
+        self._ai_status.setStyleSheet(f"color: {COLOR_WARNING}; font-weight:600; font-size:11px;")
+        self.model_path_changed.emit(provider)
 
     def _save_trading_settings(self):
         self.db.set_setting("capital",          self._capital.value())
@@ -361,7 +414,26 @@ class SettingsWidget(QWidget):
         except Exception:
             pass
 
-        # ── Restore AI + trading settings from DB ─────────────────────────
+        # ── Restore AI provider + key ─────────────────────────────────────
+        try:
+            from app.security.vault import Vault
+            vault = Vault()
+            provider = self.db.get_setting("ai_provider", "gemini")
+            provider_index = {"gemini": 0, "groq": 1, "llama": 2}.get(provider, 0)
+            self._ai_provider.setCurrentIndex(provider_index)
+            self._on_provider_changed(provider_index)
+
+            api_key = vault.load(f"{provider}_api_key", "")
+            if api_key:
+                self._ai_api_key.setText(api_key)
+
+            model_id = self.db.get_setting("ai_model_id", "")
+            if model_id:
+                self._ai_model_id.setText(model_id)
+        except Exception:
+            pass
+
+        # ── Restore local Llama settings from DB ──────────────────────────
         self._model_path.setText(self.db.get_setting("ai_model_path", "") or "")
         threads  = self.db.get_setting("ai_threads",       "4")
         ctx      = self.db.get_setting("ai_ctx_size",      "4096")
