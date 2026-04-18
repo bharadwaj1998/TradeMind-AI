@@ -10,20 +10,9 @@ Score breakdown:
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
-import math
 
-try:
-    import yfinance as yf
-    _HAS_YF = True
-except ImportError:
-    _HAS_YF = False
-
-try:
-    import pandas as pd
-    import numpy as np
-    _HAS_PANDAS = True
-except ImportError:
-    _HAS_PANDAS = False
+_HAS_YF     = True   # checked lazily inside score()
+_HAS_PANDAS = True
 
 
 @dataclass
@@ -149,7 +138,10 @@ class QuantScorer:
 
     def score(self, symbol: str) -> QuantData:
         d = QuantData(symbol=symbol)
-        if not (_HAS_YF and _HAS_PANDAS):
+        try:
+            import yfinance as yf
+            import pandas as pd
+        except ImportError:
             d.error = "yfinance / pandas not installed"
             return d
 

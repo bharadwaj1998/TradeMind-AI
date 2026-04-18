@@ -175,9 +175,9 @@ class StrategyEngine(QObject):
 
         self.engine_status.emit("Strategy engine started")
 
-        # Run once immediately
-        self._refresh_ltps()
-        self._run_strategies()
+        # Delay first run — don't block startup with network calls
+        QTimer.singleShot(10_000, self._refresh_ltps)    # first LTP after 10s
+        QTimer.singleShot(30_000, self._run_strategies)  # first scan after 30s
 
     def stop(self):
         self._running = False
@@ -373,8 +373,11 @@ class StrategyEngine(QObject):
 
     # ── WebSocket feed ────────────────────────────────────────────────────
     def _start_websocket_feed(self):
-        """Start the WebSocket feed once the API is connected."""
+        """Start the WebSocket feed — only during market hours."""
         if not (self.api and self.api.is_connected()):
+            return
+        if not self._is_market_hours():
+            self.engine_status.emit("Market closed — WebSocket feed skipped")
             return
         tokens = self._build_token_map()
         if not tokens:

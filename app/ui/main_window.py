@@ -17,20 +17,18 @@ from app.database.manager import DatabaseManager
 from app.trading.engine import StrategyEngine
 
 
-# ── Lazy imports to keep startup fast ──────────────────────────────────────
-def _load_screens():
-    from app.ui.widgets.dashboard     import DashboardWidget
-    from app.ui.widgets.live_trading  import LiveTradingWidget
-    from app.ui.widgets.history       import HistoryWidget
-    from app.ui.widgets.strategies    import StrategiesWidget
-    from app.ui.widgets.scanner       import ScannerWidget
-    from app.ui.widgets.research      import ResearchWidget
-    from app.ui.widgets.risk_monitor  import RiskMonitorWidget
-    from app.ui.widgets.ai_assistant  import AIAssistantWidget
-    from app.ui.widgets.settings      import SettingsWidget
-    return (DashboardWidget, LiveTradingWidget, HistoryWidget,
-            StrategiesWidget, ScannerWidget, ResearchWidget,
-            RiskMonitorWidget, AIAssistantWidget, SettingsWidget)
+# ── Per-screen lazy loader — import + create only on first visit ─────────────
+_SCREEN_FACTORIES = {
+    0: lambda db: __import__('app.ui.widgets.dashboard',    fromlist=['DashboardWidget']).DashboardWidget(db),
+    1: lambda db: __import__('app.ui.widgets.live_trading', fromlist=['LiveTradingWidget']).LiveTradingWidget(db),
+    2: lambda db: __import__('app.ui.widgets.history',      fromlist=['HistoryWidget']).HistoryWidget(db),
+    3: lambda db: __import__('app.ui.widgets.strategies',   fromlist=['StrategiesWidget']).StrategiesWidget(db),
+    4: lambda db: __import__('app.ui.widgets.scanner',      fromlist=['ScannerWidget']).ScannerWidget(db),
+    5: lambda db: __import__('app.ui.widgets.research',     fromlist=['ResearchWidget']).ResearchWidget(db),
+    6: lambda db: __import__('app.ui.widgets.risk_monitor', fromlist=['RiskMonitorWidget']).RiskMonitorWidget(db),
+    7: lambda db: __import__('app.ui.widgets.ai_assistant', fromlist=['AIAssistantWidget']).AIAssistantWidget(db),
+    8: lambda db: __import__('app.ui.widgets.settings',     fromlist=['SettingsWidget']).SettingsWidget(db),
+}
 
 
 NAV_ITEMS = [
@@ -93,6 +91,17 @@ class _AILoadWorker(QThread):
         self.done.emit(engine, engine.get_error())
 
 
+class _LoadingPlaceholder(QWidget):
+    """Shown while a screen is being lazy-loaded."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lbl = QLabel("Loading…")
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.setStyleSheet("color: #6b7280; font-size: 14px;")
+        lay.addWidget(lbl)
+
+
 class NavButton(QPushButton):
     def __init__(self, label: str, icon: str, parent=None):
         super().__init__(parent)
@@ -137,9 +146,9 @@ class MainWindow(QMainWindow):
         self._start_clock()
         self._navigate(0)
 
-        # Auto-login and auto-load AI model on startup
-        QTimer.singleShot(500, self._try_auto_login)
-        QTimer.singleShot(800, self._try_auto_load_ai)
+        # Defer heavy startup tasks — let window paint first
+        QTimer.singleShot(1_500, self._try_auto_login)
+        QTimer.singleShot(3_000, self._try_auto_load_ai)
 
     # ── UI construction ────────────────────────────────────────────────────
     def _build_ui(self):
@@ -205,40 +214,33 @@ class MainWindow(QMainWindow):
         self._stack = QStackedWidget()
         layout.addWidget(self._stack)
 
-        (DashboardWidget, LiveTradingWidget, HistoryWidget,
-         StrategiesWidget, ScannerWidget, ResearchWidget,
-         RiskMonitorWidget, AIAssistantWidget, SettingsWidget) = _load_screens()
+        # Screens are None until first visited — lazy loaded per _SCREEN_FACTORIES
+        n_screens = len(_SCREEN_FACTORIES)
+        self._screens = [None] * n_screens
+        self._dashboard    = None
+        self._live_trading = None
+        self._history      = None
+        self._strategies   = None
+        self._scanner      = None
+        self._research     = None
+        self._risk_monitor = None
+        self._ai_assistant = None
+        self._settings     = None
 
-        self._dashboard     = DashboardWidget(self.db)
-        self._live_trading  = LiveTradingWidget(self.db)
-        self._history       = HistoryWidget(self.db)
-        self._strategies    = StrategiesWidget(self.db)
-        self._scanner       = ScannerWidget(self.db)
-        self._research      = ResearchWidget(self.db)
-        self._risk_monitor  = RiskMonitorWidget(self.db)
-        self._ai_assistant  = AIAssistantWidget(self.db)
-        self._settings      = SettingsWidget(self.db)
+        # Add placeholder widgets so QStackedWidget has the right indices
+        for _ in range(n_screens):
+            ph = _LoadingPlaceholder()
+            self._stack.addWidget(ph)
 
-        self._screens = [
-            self._dashboard, self._live_trading, self._history,
-            self._strategies, self._scanner, self._research,
-            self._risk_monitor, self._ai_assistant, self._settings,
-        ]
-        for screen in self._screens:
-            self._stack.addWidget(screen)
+        # Load dashboard and settings immediately (needed at startup)
+        self._ensure_screen(0)   # dashboard always visible first
+        self._ensure_screen(8)   # settings needed for credential wiring
 
         # ── Wire Settings signals ────────────────────────────────────────
         self._settings.credentials_saved.connect(self._on_credentials_saved)
         self._settings.model_path_changed.connect(self._on_model_path_changed)
 
-        # ── Wire Scanner ─────────────────────────────────────────────────
-        self._scanner._auto_toggle.toggled.connect(self._on_auto_trade_toggled)
-        self._scanner._conf_spin.valueChanged.connect(self._on_conf_threshold_changed)
-
-        # ── Wire Research buy button ──────────────────────────────────────
-        self._research.buy_requested.connect(self._on_buy_requested)
-
-        # ── Start strategy engine (always on, demo mode until API connects) ──
+        # ── Start strategy engine ─────────────────────────────────────────
         self._start_strategy_engine()
 
         return content
@@ -257,14 +259,58 @@ class MainWindow(QMainWindow):
         bar.addPermanentWidget(self._conn_lbl)
         bar.showMessage("  Welcome to TradeMind AI  •  Configure Angel One credentials in Settings to begin")
 
+    # ── Lazy screen loader ─────────────────────────────────────────────────
+    def _ensure_screen(self, index: int):
+        """Create and wire a screen on first visit, replace the placeholder."""
+        if self._screens[index] is not None:
+            return
+        widget = _SCREEN_FACTORIES[index](self.db)
+        self._screens[index] = widget
+        self._stack.insertWidget(index, widget)
+        old = self._stack.widget(index + 1)   # old placeholder shifted right
+        self._stack.removeWidget(old)
+
+        # Store named references
+        _names = ['_dashboard','_live_trading','_history','_strategies',
+                  '_scanner','_research','_risk_monitor','_ai_assistant','_settings']
+        setattr(self, _names[index], widget)
+
+        # Post-load wiring
+        self._wire_screen(index, widget)
+
+    def _wire_screen(self, index: int, widget):
+        """Wire signals after lazy creation."""
+        if index == 4:   # Scanner
+            widget._auto_toggle.toggled.connect(self._on_auto_trade_toggled)
+            widget._conf_spin.valueChanged.connect(self._on_conf_threshold_changed)
+            if self._strategy_engine:
+                self._strategy_engine.scan_result.connect(widget.on_scan_result)
+        elif index == 5:   # Research
+            widget.buy_requested.connect(self._on_buy_requested)
+            if self._engine:
+                widget.set_engine(self._engine)
+            if self._api:
+                widget.set_api(self._api)
+        elif index == 7:   # AI Assistant
+            if self._engine:
+                widget.set_engine(self._engine)
+        elif index == 1:   # Live Trading
+            if self._api:
+                widget.set_api(self._api)
+            if self._strategy_engine:
+                self._strategy_engine.ltp_updated.connect(
+                    lambda ltps, w=widget: hasattr(w, 'update_ltps') and w.update_ltps(ltps)
+                )
+
     # ── Navigation ─────────────────────────────────────────────────────────
     def _navigate(self, index: int):
         self._current_index = index
+        self._ensure_screen(index)          # lazy load if first visit
         self._stack.setCurrentIndex(index)
         for idx, btn in self._nav_buttons:
             btn.set_active(idx == index)
         screen = self._screens[index]
-        if hasattr(screen, "refresh"):
+        if screen and hasattr(screen, "refresh"):
             screen.refresh()
 
     # ── Clock / Market status ──────────────────────────────────────────────
@@ -329,8 +375,8 @@ class MainWindow(QMainWindow):
             self.set_connection_status(True, msg)
             self.statusBar().showMessage(f"  Angel One connected — {msg}")
             self.db.add_alert("Angel One connected", msg, "INFO")
-            self._live_trading.set_api(self._api)
-            self._research.set_api(self._api)           # live LTP for intraday
+            if self._live_trading: self._live_trading.set_api(self._api)
+            if self._research:     self._research.set_api(self._api)
             if self._strategy_engine:
                 self._strategy_engine.set_api(self._api)
             self._settings.set_broker_status(True, msg)
@@ -365,10 +411,10 @@ class MainWindow(QMainWindow):
         self._strategy_engine.moveToThread(self._strategy_thread)
 
         # Wire engine signals to UI
+        # Scanner/LiveTrading wired lazily in _wire_screen when first visited
         self._strategy_engine.signal_generated.connect(self._on_signal)
         self._strategy_engine.order_executed.connect(self._on_order_executed)
         self._strategy_engine.ltp_updated.connect(self._on_ltp_updated)
-        self._strategy_engine.scan_result.connect(self._scanner.on_scan_result)
         self._strategy_engine.engine_status.connect(
             lambda msg: self.statusBar().showMessage(f"  {msg}")
         )
@@ -378,18 +424,15 @@ class MainWindow(QMainWindow):
         self._strategy_thread.start()
 
     def _on_signal(self, signal):
-        """Forward strategy signals to the Strategies screen."""
-        if hasattr(self._strategies, "on_signal"):
+        if self._strategies and hasattr(self._strategies, "on_signal"):
             self._strategies.on_signal(signal)
 
     def _on_order_executed(self, order: dict):
-        """Refresh dashboard and live trading after an auto-order."""
-        self._dashboard.refresh()
-        self._live_trading.refresh()
+        if self._dashboard:  self._dashboard.refresh()
+        if self._live_trading: self._live_trading.refresh()
 
     def _on_ltp_updated(self, ltps: dict):
-        """Push LTP dict to the Live Trading watchlist."""
-        if hasattr(self._live_trading, "update_ltps"):
+        if self._live_trading and hasattr(self._live_trading, "update_ltps"):
             self._live_trading.update_ltps(ltps)
 
     def _on_trading_halted(self, msg: str):
@@ -400,9 +443,9 @@ class MainWindow(QMainWindow):
     def _on_ai_loaded(self, engine, error: str):
         if engine.is_loaded():
             self._engine = engine
-            self._ai_assistant.set_engine(engine)
-            self._research.set_engine(engine)
-            # Wire AI engine into strategy engine research gate
+            # Wire to already-created screens; lazy screens get it via _wire_screen
+            if self._ai_assistant: self._ai_assistant.set_engine(engine)
+            if self._research:     self._research.set_engine(engine)
             if self._strategy_engine:
                 self._strategy_engine.set_ai_engine(engine)
             self._settings.set_ai_status(True, engine.model_name())
