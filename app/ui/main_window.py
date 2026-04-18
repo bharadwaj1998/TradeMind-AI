@@ -232,9 +232,11 @@ class MainWindow(QMainWindow):
         self._settings.model_path_changed.connect(self._on_model_path_changed)
 
         # ── Wire Scanner ─────────────────────────────────────────────────
-        # auto-trade toggle in scanner controls the engine
         self._scanner._auto_toggle.toggled.connect(self._on_auto_trade_toggled)
         self._scanner._conf_spin.valueChanged.connect(self._on_conf_threshold_changed)
+
+        # ── Wire Research buy button ──────────────────────────────────────
+        self._research.buy_requested.connect(self._on_buy_requested)
 
         # ── Start strategy engine (always on, demo mode until API connects) ──
         self._start_strategy_engine()
@@ -328,6 +330,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"  Angel One connected — {msg}")
             self.db.add_alert("Angel One connected", msg, "INFO")
             self._live_trading.set_api(self._api)
+            self._research.set_api(self._api)           # live LTP for intraday
             if self._strategy_engine:
                 self._strategy_engine.set_api(self._api)
             self._settings.set_broker_status(True, msg)
@@ -429,3 +432,23 @@ class MainWindow(QMainWindow):
             self._strategy_engine.set_auto_trade(
                 self._scanner.is_auto_trade(), value
             )
+
+    def _on_buy_requested(self, order: dict):
+        """Open the order dialog when user clicks BUY from research/intraday."""
+        from app.ui.dialogs.order_dialog import OrderDialog
+        dlg = OrderDialog(
+            symbol    = order["symbol"],
+            direction = order.get("direction", "BUY"),
+            price     = order.get("price", 0.0),
+            stop_loss = order.get("sl", 0.0),
+            target    = order.get("target", 0.0),
+            api       = self._api,
+            parent    = self,
+        )
+        dlg.order_placed.connect(lambda r: self.db.add_alert(
+            f"{'[LIVE]' if not r.get('paper') else '[PAPER]'} "
+            f"{r['direction']} {r['qty']}× {r['symbol']}",
+            f"Order ID: {r.get('orderid') or 'paper'}",
+            "INFO",
+        ))
+        dlg.exec()
