@@ -8,6 +8,7 @@ Score breakdown:
   25%  Price momentum     (5-day and 20-day return)
 """
 from __future__ import annotations
+import time
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 
@@ -136,7 +137,15 @@ class QuantScorer:
     Call score(symbol) → QuantData.
     """
 
+    _cache: Dict[str, tuple] = {}   # {symbol: (ts, QuantData)}
+    _CACHE_TTL = 1800               # 30 minutes — safe for EOD data
+
     def score(self, symbol: str) -> QuantData:
+        # Return cached result if fresh enough
+        cached = self._cache.get(symbol)
+        if cached and (time.time() - cached[0]) < self._CACHE_TTL:
+            return cached[1]
+
         d = QuantData(symbol=symbol)
         try:
             import yfinance as yf
@@ -207,6 +216,8 @@ class QuantScorer:
         d.composite_score = _clamp(
             0.50 * tech_score + 0.50 * mom_score
         )
+        # Cache result
+        QuantScorer._cache[symbol] = (time.time(), d)
         return d
 
     def finalise(self, d: QuantData, news_score: float):

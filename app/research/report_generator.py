@@ -7,7 +7,7 @@ Output: a full HTML string ready for QTextBrowser.
 from __future__ import annotations
 import threading
 from datetime import datetime
-from typing import List, Dict, Optional, Callable
+from typing import List, Dict, Optional, Callable, Tuple
 
 from app.research.news_fetcher  import NewsFetcher, Article
 from app.research.quant_scorer  import QuantScorer, QuantData
@@ -373,45 +373,98 @@ class ReportGenerator:
         threading.Thread(target=_run, daemon=True, name="research-gen").start()
 
     def _pipeline(self, symbols: List[str], progress) -> str:
-        progress("Fetching market news…")
-        market_articles = self._fetcher.fetch_market_news(max_per_feed=20, max_hours=24)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        progress(f"Fetching stock-specific news for {len(symbols)} symbols…")
-        stock_news = self._fetcher.fetch_batch(symbols, max_per_symbol=6)
+        # ── Step 1: Fetch news + quant data IN PARALLEL ───────────────────
+        progress("Fetching news & price data in parallel…")
 
-        cards = []
-        results: list[tuple[float, str]] = []   # (score, card_html)
+        quant_data: Dict[str, QuantData] = {}
+        stock_news: Dict[str, list] = {}
+        market_articles = []
 
-        for i, symbol in enumerate(symbols):
-            progress(f"Analysing {symbol} ({i+1}/{len(symbols)})…")
+        def _fetch_market():
+            return self._fetcher.fetch_market_news(max_per_feed=15, max_hours=24)
 
-            # Quant data
-            qd = self._scorer.score(symbol)
+        def _fetch_stock_news(sym):
+            return sym, self._fetcher.fetch_stock_news(sym, max_articles=5)
 
-            # Combine market news with stock-specific news
-            all_news = stock_news.get(symbol, [])
-            # Also pull any relevant market articles mentioning this symbol
-            sym_lower = symbol.lower()
+        def _fetch_quant(sym):
+            return sym, self._scorer.score(sym)
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            # Submit all tasks simultaneously
+            mkt_future   = pool.submit(_fetch_market)
+            news_futures = {pool.submit(_fetch_stock_news, s): s for s in symbols}
+            quant_futures= {pool.submit(_fetch_quant,      s): s for s in symbols}
+
+            market_articles = mkt_future.result(timeout=20)
+
+            for f in as_completed(news_futures, timeout=25):
+                sym, articles = f.result()
+                stock_news[sym] = articles
+
+            for f in as_completed(quant_futures, timeout=30):
+                sym, qd = f.result()
+                quant_data[sym] = qd
+
+        progress(f"Price data fetched. Running AI on top stocks…")
+
+        # ── Step 2: Merge news, do a quick pre-sort by technical score ────
+        all_news_map: Dict[str, list] = {}
+        for sym in symbols:
+            news = list(stock_news.get(sym, []))
+            sym_lower = sym.lower()
             for a in market_articles:
                 if sym_lower in a.title.lower() or sym_lower in a.summary.lower():
-                    if a not in all_news:
-                        all_news.insert(0, a)
+                    if a not in news:
+                        news.insert(0, a)
+            all_news_map[sym] = news
 
-            # AI analysis
-            ai_result = self._ai_analyse(symbol, all_news, qd)
+        # Sort by technical score — only call AI on top 5
+        sorted_syms = sorted(
+            symbols,
+            key=lambda s: quant_data.get(s, QuantData(s)).composite_score,
+            reverse=True,
+        )
+        ai_top_n   = 5
+        ai_symbols = set(sorted_syms[:ai_top_n])
 
-            # Finalise quant score with news score
-            self._scorer.finalise(qd, ai_result["news_score"])
+        # ── Step 3: Parallel AI calls for top stocks only ─────────────────
+        ai_results: Dict[str, dict] = {}
 
-            card = _render_card(symbol, qd, ai_result)
+        def _run_ai(sym):
+            qd = quant_data.get(sym, QuantData(sym))
+            return sym, self._ai_analyse(sym, all_news_map.get(sym, []), qd)
+
+        if self._engine and self._engine.is_loaded():
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                futures = {pool.submit(_run_ai, s): s for s in ai_symbols}
+                done = 0
+                for f in as_completed(futures, timeout=60):
+                    sym, result = f.result()
+                    ai_results[sym] = result
+                    done += 1
+                    progress(f"AI done {done}/{len(ai_symbols)}: {sym}")
+
+        # ── Step 4: Build cards ───────────────────────────────────────────
+        results: list[tuple[float, str]] = []
+        for sym in symbols:
+            qd      = quant_data.get(sym, QuantData(sym))
+            ai      = ai_results.get(sym, {
+                "news_score": 50, "recommendation": "HOLD",
+                "target_price": None, "stop_loss": None,
+                "risk_level": "MEDIUM", "summary": "",
+                "catalysts": [], "risks": [],
+                "verdict": "Quant data only — AI analysis for top stocks.",
+            })
+            self._scorer.finalise(qd, ai["news_score"])
+            card = _render_card(sym, qd, ai)
             results.append((qd.composite_score, card))
 
-        # Sort by composite score descending
         results.sort(key=lambda x: x[0], reverse=True)
-        cards = [c for _, c in results]
 
         return _render_full_report(
-            cards,
+            [c for _, c in results],
             generated_at=datetime.now().strftime("%d %b %Y  %H:%M IST"),
             market_news_count=len(market_articles),
             symbol_count=len(symbols),

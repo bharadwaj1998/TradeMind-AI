@@ -20,16 +20,12 @@ import threading
 from datetime import datetime
 from typing import List, Dict, Optional
 
-import pandas as pd
-from PyQt6.QtCore import QThread, pyqtSignal, QTimer, QObject
+from PyQt6.QtCore import pyqtSignal, QTimer, QObject
 
 from app.database.manager import DatabaseManager, Strategy
 from app.trading.signal import TradeSignal, SignalType
 from app.trading.risk import RiskManager
 from app.config import EXCHANGE_NSE
-from app.api.websocket_feed import AngelOneFeed
-from app.api.angel_one import get_token
-from app.ai.researcher import AIResearcher
 
 # Strategy registry — maps DB name → class
 from app.trading.strategies.momentum      import MomentumBreakout
@@ -50,7 +46,8 @@ DEFAULT_SYMBOLS = [
 
 
 # ── Demo OHLCV generator (used when API is not connected) ─────────────────────
-def _generate_demo_ohlcv(symbol: str, n: int = 60) -> pd.DataFrame:
+def _generate_demo_ohlcv(symbol: str, n: int = 60):
+    import pandas as pd
     """
     Produce synthetic intraday OHLCV data for paper-trading / demo mode.
     Simulates a realistic price series using a random walk.
@@ -87,7 +84,8 @@ def _generate_demo_ohlcv(symbol: str, n: int = 60) -> pd.DataFrame:
     })
 
 
-def _angel_ohlcv_to_df(raw: list) -> Optional[pd.DataFrame]:
+def _angel_ohlcv_to_df(raw: list):
+    import pandas as pd
     """Convert Angel One getCandleData response list to a DataFrame."""
     if not raw:
         return None
@@ -131,13 +129,13 @@ class StrategyEngine(QObject):
         self._paper_mode = True
         self._watchlist: List[str] = list(DEFAULT_SYMBOLS)
 
-        # WebSocket feed + LTP cache
-        self._feed: Optional[AngelOneFeed] = None
+        # WebSocket feed + LTP cache (AngelOneFeed imported lazily)
+        self._feed = None
         self._ltp_cache: Dict[str, float] = {}
         self._ltp_lock = threading.Lock()
 
-        # AI research gate
-        self._researcher: Optional[AIResearcher] = None
+        # AI research gate (AIResearcher imported lazily)
+        self._researcher = None
         self._auto_trade = False          # controlled by Scanner widget toggle
         self._ai_threshold = 70           # min AI confidence to execute
 
@@ -195,6 +193,7 @@ class StrategyEngine(QObject):
 
     def set_ai_engine(self, engine):
         """Wire the active AI engine into the research gate."""
+        from app.ai.researcher import AIResearcher
         self._researcher = AIResearcher(engine, self._ai_threshold)
         self.engine_status.emit("AI research gate active")
 
@@ -385,6 +384,7 @@ class StrategyEngine(QObject):
         auth = self.api.get_auth_tokens()
         # SmartWebSocketV2 needs raw JWT, not "Bearer <token>"
         jwt = auth["jwt_token"].removeprefix("Bearer ").strip()
+        from app.api.websocket_feed import AngelOneFeed
         self._feed = AngelOneFeed(on_tick=self._on_ws_tick)
         started = self._feed.start(
             jwt_token  = jwt,
@@ -402,6 +402,7 @@ class StrategyEngine(QObject):
 
     def _build_token_map(self) -> Dict[str, str]:
         """Build {angel_token: symbol} for the current watchlist."""
+        from app.api.angel_one import get_token
         result = {}
         for sym in self._watchlist:
             tok = get_token(sym)
