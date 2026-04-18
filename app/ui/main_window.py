@@ -24,12 +24,13 @@ def _load_screens():
     from app.ui.widgets.history       import HistoryWidget
     from app.ui.widgets.strategies    import StrategiesWidget
     from app.ui.widgets.scanner       import ScannerWidget
+    from app.ui.widgets.research      import ResearchWidget
     from app.ui.widgets.risk_monitor  import RiskMonitorWidget
     from app.ui.widgets.ai_assistant  import AIAssistantWidget
     from app.ui.widgets.settings      import SettingsWidget
     return (DashboardWidget, LiveTradingWidget, HistoryWidget,
-            StrategiesWidget, ScannerWidget, RiskMonitorWidget,
-            AIAssistantWidget, SettingsWidget)
+            StrategiesWidget, ScannerWidget, ResearchWidget,
+            RiskMonitorWidget, AIAssistantWidget, SettingsWidget)
 
 
 NAV_ITEMS = [
@@ -41,11 +42,12 @@ NAV_ITEMS = [
     ("ANALYSIS", None, None),
     ("Strategies",    "♟",  3),
     ("AI Scanner",    "🔍", 4),
-    ("Risk Monitor",  "🛡",  5),
+    ("Research",      "📰", 5),
+    ("Risk Monitor",  "🛡",  6),
     ("AI ASSISTANT", None, None),
-    ("AI Assistant",  "🤖", 6),
+    ("AI Assistant",  "🤖", 7),
     ("SYSTEM",  None, None),
-    ("Settings",      "⚙",  7),
+    ("Settings",      "⚙",  8),
 ]
 
 
@@ -204,22 +206,23 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._stack)
 
         (DashboardWidget, LiveTradingWidget, HistoryWidget,
-         StrategiesWidget, ScannerWidget, RiskMonitorWidget,
-         AIAssistantWidget, SettingsWidget) = _load_screens()
+         StrategiesWidget, ScannerWidget, ResearchWidget,
+         RiskMonitorWidget, AIAssistantWidget, SettingsWidget) = _load_screens()
 
         self._dashboard     = DashboardWidget(self.db)
         self._live_trading  = LiveTradingWidget(self.db)
         self._history       = HistoryWidget(self.db)
         self._strategies    = StrategiesWidget(self.db)
         self._scanner       = ScannerWidget(self.db)
+        self._research      = ResearchWidget(self.db)
         self._risk_monitor  = RiskMonitorWidget(self.db)
         self._ai_assistant  = AIAssistantWidget(self.db)
         self._settings      = SettingsWidget(self.db)
 
         self._screens = [
             self._dashboard, self._live_trading, self._history,
-            self._strategies, self._scanner, self._risk_monitor,
-            self._ai_assistant, self._settings,
+            self._strategies, self._scanner, self._research,
+            self._risk_monitor, self._ai_assistant, self._settings,
         ]
         for screen in self._screens:
             self._stack.addWidget(screen)
@@ -395,6 +398,7 @@ class MainWindow(QMainWindow):
         if engine.is_loaded():
             self._engine = engine
             self._ai_assistant.set_engine(engine)
+            self._research.set_engine(engine)
             # Wire AI engine into strategy engine research gate
             if self._strategy_engine:
                 self._strategy_engine.set_ai_engine(engine)
