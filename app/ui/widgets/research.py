@@ -360,6 +360,13 @@ class ResearchWidget(QWidget):
         for pick in picks:
             self._add_intraday_row(pick)
 
+        # Persist so picks survive an app restart
+        if picks:
+            try:
+                self.db.save_daily_picks(picks)
+            except Exception:
+                pass
+
         self._intraday_btn.setEnabled(True)
         self._intraday_btn.setText("⚡  Get Today's Picks")
         self._intraday_progress.setVisible(False)
@@ -494,6 +501,42 @@ class ResearchWidget(QWidget):
 
     def refresh(self):
         self._update_session_label()
+        # Restore today's picks from DB if the table is currently empty
+        if self._intraday_table.rowCount() == 0:
+            try:
+                saved = self.db.get_daily_picks()
+                if saved:
+                    self._restore_picks_from_db(saved)
+            except Exception:
+                pass
+
+    def _restore_picks_from_db(self, rows: list):
+        """Populate the intraday table from persisted DailyPick DB rows."""
+        from app.research.intraday_picker import IntradayPick
+        self._intraday_table.setRowCount(0)
+        for row in rows:
+            pick = IntradayPick(
+                symbol       = row.symbol,
+                ltp          = row.ltp,
+                gap_pct      = row.gap_pct,
+                volume_ratio = row.volume_ratio,
+                rsi          = row.rsi,
+                signal       = row.signal,
+                entry        = row.entry,
+                target       = row.target,
+                stop_loss    = row.stop_loss,
+                score        = row.score,
+                reason       = row.reason or "",
+                strategy     = row.strategy or "",
+                risk         = row.risk,
+            )
+            self._add_intraday_row(pick)
+        if rows:
+            from datetime import date
+            self._intraday_status.setText(
+                f"Restored {len(rows)} picks from {date.today().strftime('%d %b')} — "
+                "click Get Today's Picks to refresh"
+            )
 
 
 def _add_sym_attr(m):

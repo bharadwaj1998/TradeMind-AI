@@ -488,10 +488,34 @@ class MainWindow(QMainWindow):
             api       = self._api,
             parent    = self,
         )
-        dlg.order_placed.connect(lambda r: self.db.add_alert(
-            f"{'[LIVE]' if not r.get('paper') else '[PAPER]'} "
-            f"{r['direction']} {r['qty']}× {r['symbol']}",
-            f"Order ID: {r.get('orderid') or 'paper'}",
-            "INFO",
-        ))
+
+        def _on_order_placed(r):
+            # Use the limit price if set, otherwise fall back to the pick's LTP
+            entry_price = r.get("price") or order.get("price", 0.0) or 0.0
+            sl     = order.get("sl", 0.0) or None
+            target = order.get("target", 0.0) or None
+            self.db.add_trade(
+                symbol      = r["symbol"],
+                exchange    = "NSE",
+                direction   = r["direction"],
+                quantity    = r["qty"],
+                entry_price = entry_price,
+                stop_loss   = sl,
+                target      = target,
+                strategy    = order.get("strategy", "Intraday Pick"),
+                order_id    = r.get("orderid"),
+            )
+            mode = "[LIVE]" if not r.get("paper") else "[PAPER]"
+            self.db.add_alert(
+                f"{mode} {r['direction']} {r['qty']}× {r['symbol']}",
+                f"Entry ₹{entry_price or 'MARKET'}  "
+                f"SL ₹{sl or '—'}  Target ₹{target or '—'}  "
+                f"Order ID: {r.get('orderid') or 'paper'}",
+                "INFO",
+            )
+            if self._dashboard:    self._dashboard.refresh()
+            if self._live_trading: self._live_trading.refresh()
+            if self._history:      self._history.refresh()
+
+        dlg.order_placed.connect(_on_order_placed)
         dlg.exec()

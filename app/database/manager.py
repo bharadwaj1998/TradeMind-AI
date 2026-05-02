@@ -119,6 +119,27 @@ class AppSetting(Base):
     value = Column(Text, nullable=True)
 
 
+class DailyPick(Base):
+    __tablename__ = "daily_picks"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    pick_date    = Column(Date, nullable=False, default=date.today)
+    symbol       = Column(String(20), nullable=False)
+    signal       = Column(String(16), default="WATCH")
+    strategy     = Column(String(64), nullable=True)
+    ltp          = Column(Float, default=0.0)
+    entry        = Column(Float, default=0.0)
+    target       = Column(Float, default=0.0)
+    stop_loss    = Column(Float, default=0.0)
+    gap_pct      = Column(Float, default=0.0)
+    volume_ratio = Column(Float, default=1.0)
+    rsi          = Column(Float, default=50.0)
+    score        = Column(Integer, default=50)
+    risk         = Column(String(16), default="MEDIUM")
+    reason       = Column(Text, nullable=True)
+    created_at   = Column(DateTime, default=datetime.now)
+
+
 # ─── Manager ─────────────────────────────────────────────────────────────────
 class DatabaseManager:
     def __init__(self):
@@ -249,6 +270,46 @@ class DatabaseManager:
             return (s.query(AILog)
                     .order_by(AILog.created_at.asc())
                     .limit(limit).all())
+
+    # ── Daily Picks ──────────────────────────────────────────────────────────
+    def save_daily_picks(self, picks: list, pick_date=None):
+        """Persist intraday picks for the given date, replacing any existing ones."""
+        today = pick_date or date.today()
+        with self.session() as s:
+            s.query(DailyPick).filter_by(pick_date=today).delete()
+            for p in picks:
+                s.add(DailyPick(
+                    pick_date    = today,
+                    symbol       = p.symbol,
+                    signal       = p.signal,
+                    strategy     = p.strategy,
+                    ltp          = p.ltp,
+                    entry        = p.entry,
+                    target       = p.target,
+                    stop_loss    = p.stop_loss,
+                    gap_pct      = p.gap_pct,
+                    volume_ratio = p.volume_ratio,
+                    rsi          = p.rsi,
+                    score        = p.score,
+                    risk         = p.risk,
+                    reason       = p.reason,
+                ))
+            s.commit()
+
+    def get_daily_picks(self, pick_date=None) -> List["DailyPick"]:
+        """Return picks for the given date (defaults to today), ordered by score."""
+        today = pick_date or date.today()
+        with self.session() as s:
+            rows = (s.query(DailyPick)
+                    .filter_by(pick_date=today)
+                    .order_by(DailyPick.score.desc())
+                    .all())
+            # Load scalar attributes while session is still open
+            for row in rows:
+                _ = (row.symbol, row.signal, row.strategy, row.ltp,
+                     row.entry, row.target, row.stop_loss, row.gap_pct,
+                     row.volume_ratio, row.rsi, row.score, row.risk, row.reason)
+            return rows
 
     # ── Stats helpers ────────────────────────────────────────────────────────
     def get_today_stats(self) -> Dict:

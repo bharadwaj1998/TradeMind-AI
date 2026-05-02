@@ -20,6 +20,8 @@ import threading
 from datetime import datetime
 from typing import List, Dict, Optional
 
+import pandas as pd
+
 from PyQt6.QtCore import pyqtSignal, QTimer, QObject
 
 from app.database.manager import DatabaseManager, Strategy
@@ -47,7 +49,6 @@ DEFAULT_SYMBOLS = [
 
 # ── Demo OHLCV generator (used when API is not connected) ─────────────────────
 def _generate_demo_ohlcv(symbol: str, n: int = 60):
-    import pandas as pd
     """
     Produce synthetic intraday OHLCV data for paper-trading / demo mode.
     Simulates a realistic price series using a random walk.
@@ -85,7 +86,6 @@ def _generate_demo_ohlcv(symbol: str, n: int = 60):
 
 
 def _angel_ohlcv_to_df(raw: list):
-    import pandas as pd
     """Convert Angel One getCandleData response list to a DataFrame."""
     if not raw:
         return None
