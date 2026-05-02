@@ -70,9 +70,9 @@ def _intraday_score(pick: IntradayPick, phase: str) -> IntradayPick:
     score = 50
     reasons = []
 
-    # Gap analysis
+    # Gap analysis — runs for all phases so post-market scans still score
     gap = pick.gap_pct
-    if phase in ("morning", "pre"):
+    if phase in ("morning", "pre", "closed"):
         if gap > 1.5:
             score += 20
             pick.signal   = "BUY"
@@ -115,9 +115,9 @@ def _intraday_score(pick: IntradayPick, phase: str) -> IntradayPick:
             score -= 5
             reasons.append(f"RSI {rsi:.0f} — overbought, caution")
 
-    # Day change
+    # Day change — also check in post-market for next-day planning
     chg = pick.day_chg_pct
-    if phase in ("midday", "afternoon"):
+    if phase in ("midday", "afternoon", "closed"):
         if chg > 2:
             score += 15
             pick.signal   = "BUY"
@@ -186,10 +186,10 @@ class IntradayPicker:
 
         batch = [s + ".NS" for s in symbols]
 
-        # ── Fetch 5-day 1-min data for gap + volume ───────────────────────
+        # ── Fetch 1-month daily data — needs 15+ bars for valid RSI ─────────
         try:
             raw = yf.download(
-                batch, period="5d", interval="1d",
+                batch, period="1mo", interval="1d",
                 auto_adjust=True, progress=False, threads=True,
             )
             if raw.empty:
@@ -225,10 +225,11 @@ class IntradayPicker:
                 gap_pct     = (today_open  - prev_close) / prev_close * 100
                 day_chg_pct = (today_close - prev_close) / prev_close * 100
 
-                avg_vol     = float(v.iloc[:-1].tail(10).mean()) or 1
-                vol_ratio   = float(v.iloc[-1]) / avg_vol
+                # 20-day average volume for a reliable ratio (skip today's bar)
+                avg_vol   = float(v.iloc[:-1].tail(20).mean()) or 1
+                vol_ratio = float(v.iloc[-1]) / avg_vol
 
-                rsi = _rsi_series(c)
+                rsi = _rsi_series(c)  # valid now that we have 20+ bars
 
                 # Live LTP from Angel One if connected
                 ltp = today_close
